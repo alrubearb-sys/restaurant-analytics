@@ -1,0 +1,5 @@
+data/raw/
+_check.py
+__pycache__/
+*.pyc
+.streamlit/
