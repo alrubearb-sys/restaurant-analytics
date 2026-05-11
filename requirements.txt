@@ -5,3 +5,8 @@ seaborn
 scikit-learn
 joblib
 streamlit
+python-dotenv
+faiss-cpu
+sentence-transformers
+langchain-core
+langchain-groq

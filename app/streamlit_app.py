@@ -6,7 +6,15 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import joblib
+import os
+import pickle
+import numpy as np
 from pathlib import Path
+from dotenv import load_dotenv
+
+_env_file = Path(r"D:\Projects DataAnalyst\project4_genai_rag\.env")
+if _env_file.exists():
+    load_dotenv(_env_file)
 
 DATA_PATH = Path("data/cleaned/restaurants_clean.csv")
 MODEL_PATH = Path("models/best_model.joblib")
@@ -252,6 +260,91 @@ def page_findings(df):
     )
 
 
+RAG_INDEX_DIR = Path(__file__).parent.parent / "rag" / "faiss_index"
+
+
+@st.cache_resource
+def load_rag_resources():
+    import faiss
+    from sentence_transformers import SentenceTransformer
+    index = faiss.read_index(str(RAG_INDEX_DIR / "index.faiss"))
+    with open(RAG_INDEX_DIR / "chunks.pkl", "rb") as f:
+        chunks = pickle.load(f)
+    model = SentenceTransformer("all-MiniLM-L6-v2")
+    return index, chunks, model
+
+
+def rag_retrieve(query, index, chunks, model, k=5):
+    query_vec = model.encode([query], convert_to_numpy=True).astype(np.float32)
+    _, indices = index.search(query_vec, k)
+    return [chunks[i] for i in indices[0] if i < len(chunks)]
+
+
+def rag_ask(question, index, chunks, model):
+    from langchain_groq import ChatGroq
+    from langchain_core.prompts import ChatPromptTemplate
+
+    retrieved = rag_retrieve(question, index, chunks, model)
+    context = "\n\n".join(f"- {c}" for c in retrieved)
+
+    system = (
+        "You are a data analyst assistant with deep knowledge of a restaurant dataset "
+        "containing 67,578 restaurants across 1,009 cities. "
+        "Answer questions based strictly on the context below. "
+        "Be concise, factual, and cite specific numbers when available. "
+        "If the context doesn't contain enough information, say so clearly.\n\nContext:\n{context}"
+    )
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system),
+        ("human", "{question}"),
+    ])
+    llm = ChatGroq(
+        model="llama-3.3-70b-versatile",
+        groq_api_key=os.getenv("GROQ_API_KEY"),
+        temperature=0.2,
+    )
+    response = (prompt | llm).invoke({"context": context, "question": question})
+    return response.content, retrieved
+
+
+def page_ask_data():
+    st.title("Ask the Data")
+    st.write(
+        "Ask any question in plain English about the restaurant dataset. "
+        "Powered by a RAG pipeline: LLaMA 3.3 via Groq + FAISS vector search."
+    )
+
+    try:
+        index, chunks, model = load_rag_resources()
+    except Exception as e:
+        st.error(f"Could not load RAG index: {e}")
+        st.info("Run `prepare_data.py` in project4_genai_rag to generate the index first.")
+        return
+
+    examples = [
+        "Which city has the best average rating?",
+        "Do restaurants with outdoor seating perform better?",
+        "Is delivery good or bad for ratings?",
+        "Which price range performs best?",
+        "What percentage of restaurants reach 4 stars?",
+    ]
+    st.caption("Example questions: " + " · ".join(f"*{q}*" for q in examples))
+
+    question = st.text_input("Your question:", placeholder="e.g. Which city has the best average rating?")
+
+    if st.button("Ask", type="primary") and question.strip():
+        with st.spinner("Searching data and generating answer..."):
+            try:
+                answer, sources = rag_ask(question, index, chunks, model)
+                st.markdown("### Answer")
+                st.write(answer)
+                with st.expander(f"Sources ({len(sources)} chunks retrieved)"):
+                    for i, chunk in enumerate(sources, 1):
+                        st.markdown(f"**[{i}]** {chunk}")
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+
 def main():
     df = load_data()
 
@@ -260,6 +353,7 @@ def main():
         "Overview": page_overview,
         "Operational Insights": page_operational,
         "Experimental: Rating Predictor": page_predictor,
+        "Ask the Data": lambda _: page_ask_data(),
     }
 
     st.sidebar.title("Navigation")
